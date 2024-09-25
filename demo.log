@@ -1,0 +1,176 @@
+Loading documents...
+	>> Retrieve forums after 2024-05-03...
+Creating the vector DB...
+
+Question: Please summarize the top-3 winning solutions of LMSYS competition.
+
+Answer (w/o RAG)
+--------------------------------------------------
+I couldn't find any information about a well-known competition called "LMSYS". It's possible that it's a local or internal event, or maybe it doesn't exist.
+
+However, I can suggest some alternatives:
+
+1. Are you referring to the Loihi Islands System (LIS) or Loihi Micro Systems (LM SYS) competition? If so, please provide me with more context or details.
+2. You may be thinking of another competition that was held in a specific location or industry. Could you provide me with more information about what LMSYS is and where it took place?
+
+If I'm still unable to find any relevant information, please let me know how else I can assist you!
+
+
+>>> RAG <<<
+Running RAG...
+	>> RAG retrieving...
+Takes 0.0034 sec.
+
+	>> Generating the answer...
+Takes 0.0054 sec.
+
+Answer (w RAG)
+--------------------------------------------------
+Based on the provided discussion, here are the answers to your questions:
+
+1. **Yes**, you understand correctly that all team submissions will be evaluated according to secondary criteria and considered for final Private LB, without needing to pick a submission to maximize these criteria among 2 final submissions.
+
+2. **No**, one team cannot be awarded all three prizes: Leaderboard Prize, Top-15 Retrieval Sensitivity, Model Efficiency. These are separate prizes that require different solutions or approaches.
+
+Regarding the top-3 winning solutions of LMSYS competition, I couldn't find any explicit information on them in the provided discussion. However, based on the context and the discussion with jwebermsk, it seems that the usual rules for competitions will apply, and the final results will be determined by the new private LB.
+
+Let me know if you have further questions or need additional clarification!
+
+Retrieved contexts
+--------------------------------------------------
+## Context 0 ##
+I enjoyed this competition! Thanks Kaggle and LMSYS! It was a great opportunity to learn about finetuning and inferring large LLM.
+
+I recently began learning how to finetune large LLM-4B+ four months ago. I posted my first notebook in Essay comp [here][1] (LLM-7B) and Twenty Questions [here][4] (LLM-8B). Then I practiced in KDD Cup 2024, explained [here][2] (LLM-72B). Then began applying what I learned to LMSYS comp and published starter notebook [here][3] (LLM-34B). Large language models are so exciting!
+
+# LoRA/QLoRA Efficient Training for LLM
+
+Using LoRA/QLoRA allows us to train a `Gemma2-9B-IT` model like it is only `DeBERTa-v3-base` or `large` wow! If we finetuned the full `Gemma2-9B-IT`, we would need to update 9 billion parameters. Instead we can use LoRA/QLoRA with rank=64 and only finetune 200k parameters (or use `rank=16` and 50k parameters). 
+
+For reference DeBERTa-v3-base has 90k parameters and DeBERTa-v3-large has 300k parameters. LoRA works based on linear algebra. If the weights of Gemma2 are `(m x n)` matrix where `m*n=9B`, we leave them as is and only find two LoRA matrices of sizes `(m x r)` and `(r x n)` where each is about 100k. Then our finetuned model is the product of these two matrices plus the original base matrix. (Of course Gemma2 weights are more than one matrix but you get the idea).
+
+![](https://raw.githubusercontent.com/cdeotte/Kaggle_Images/main/Aug-2024/gemma2.png)
+
+# How To Tune LoRA/QLoRA
+Using LoRA/QLoRA introduces more variables to tune. Namely we now have `r` (i.e. rank), `alpha`, and `modules`. This is in addition to our usual training parameters `learning rate`, `epochs` and `batch_size`. Here is a strategy to tune everything:
+* First pick modules. If possible using all modules will yield best results: 
+`target_modules = ["q_proj", "k_proj", "v_proj", "down_proj","up_proj","o_proj","gate_proj"]`.
+* Next pick a learning rate. This will be the learning rate of your model's head. Using `2e-4` or `2e-5` is a good choice. And using `full batch size = 8` is good (i.e. `bs per gpu` times `number of GPUs`). Use gradient accumulation, gradient checkpointing, or multiple GPU to achieve this `batch size`. (Note when using `model parallelism` with HuggingFace trainer then `per_device_train_batch_size` is actually the `full batch size` not per device. Also note gradient checkpointing didn't seem to work correctly with HuggingFace trainer).
+* Next start with `r=16` and try different alphas. The parameter `alpha` determines the `learning rate of the backbone = alpha/rank * head_LR`. Do `alpha = 2, 4, 8, 16, 32, 64`. Train for 1 epoch (linear schedule with warmup). We now have `r=16` and corresponding best alpha.
+* Keep the alpha we discovered fixed and try different ranks. Above if we used `LR=2e-4` then we will find `a=4` to be optimal. So now we try `r=4,a=4`, `r=8,a=4`, `r=16,a=4`, `r=32,a=4`, `r=64,a=4` etc (In this comp once we find optimal `alpha` for one rank, it is also the optimal `alpha` for all ranks when keeping `LR` (learning rate) the same).
+* We will generally find there is a specific `rank r` which bisects performance. In this comp `rank<16` performs poorly and `rank>=16` performs well. (Increasing above `r=16` will generally yield slight improvement. For me using `r=1024` gave `+0.002` boost vs. `r=16`).
+
+(FYI, if we use `LR=2e-4` 1 epoch linear schedule with warmup, then `a=4` is best alpha for all rank. If we use `LR=2e-5`, then `a=192` is best alpha for all rank. If we use `LR=6e-5`, then `a=64` is best alpha for all rank).
+
+# Training with Multiple GPU
+Training large LLM using multiple GPU helps with memory and speed. In this competition, I used `Nvidia 8xV100 32GB GPUs` and sometimes used `Nvidia 4xA100 80GB GPUs`. Thank you Nvidia for compute resources.
+
+We need to be aware that there are (at least) three ways to parallelize training LLM with multiple GPU. Search for blogs on these topics to learn more. We can use
+* data parallelism (each GPU has a copy of LLM and batches are processed in parallel)
+* model parallelism (LLM is split over GPUs and batches are processed sequentially)
+* hybrid parallelism (LLM is split over GPUs and batches are processed in parallel)
+
+![](https://raw.githubusercontent.com/cdeotte/Kaggle_Images/main/Aug-2024/parallel-types-2.gif)
+
+HuggingFace trainer uses the first two. More advanced libraries like Axolotl/DeepSpeed can use the most efficient third one. These affect our training speed and memory requirements. Ideally during training we want all GPUs to be utilized 100%. So we can run `nvidia-smi` or `gpustat -i` and adjust our parallel code until we achieve the most efficient use of GPU.
+
+# How To Achieve Silver Medal with Public Notebook
+Kaggle user @emiz6413 published an amazing starter notebook [train here][5] and [infer here][6] which achieved `LB = 0.941`! Thank you Eisuke Mizutani for sharing! With just a few changes, we can boost this public notebook to `LB < 0.900` **Silver Medal!**
+* Use TTA! Change `tta = False` to `tta = True` boosts `LB 0.941 => 0.926`
+* Change LoRA `r=16, a=32, freeze=16` to `r=64, a=16, freeze=0` boosts `LB 0.926 => 0.913`
+* Add modules: `["down_proj","up_proj","o_proj","gate_proj"]` and use `r=64, a=4` boost `LB 0.913 => 0.903`
+* Add external `33k dedup dataset` [here][7] and train with `100%` data boost `LB 0.903 => 0.899` **Silver Medal!**
+
+# How To Almost Achieve Gold Medal (i.e. 16th place)
+Starting from above, we can almost achieve gold medal (i.e. 16th place) with the following updates:
+* Train with `max=2048` vs `max=1024` boost `LB 0.899 => 0.895`
+* Change LoRA `r=64, a=4` to `r=1024, a=4` boost `LB 0.895 => 0.894`
+* Use `LoRA train fp16 infer 8bit` instead of `QLoRA train 4bit infer 4bit` => 10% inference speedup!
+* Infer with `max=3072` (and avoid timeout with 8bit quant above) boost `LB 0.894 => 0.893`
+* TTA with two different Gemma2 boost `LB 0.893 => 0.891`
+* Infer 3 heads (preference, model_a, model_b discard last two) boost `LB 0.891 => 0.890`
+* Truncate from left vs right boost `LB 0.890 => 0.885` **Almost Gold Medal!**
+
+# Truncate Left instead of Truncate Right
+One of the biggest boosts came from truncating long text from the beginning (i.e. left side) instead of the ending (i.e. right side):
+
+    def prepare_text(self, prompts, responses_a, responses_b):
+
+        prompts = json.loads(prompts)
+        responses_a = json.loads(responses_a)
+        responses_b = json.loads(responses_b)
+
+        rounds = [
+            f"<start_of_turn>prompt\n{prompts[i]}<end_of_turn>\n"
+            +f"<start_of_turn>response_a\n{responses_a[i]}<end_of_turn>\n"
+            +f"<start_of_turn>response_b\n{responses_b[i]}<end_of_turn>"
+            for i in range(len(prompts))
+        ]
+
+        for k in range(len(rounds)):
+            text = "\n".join(rounds[k:])
+            if len( self.tokenizer(text)["input_ids"] )<3072: break
+
+        return text
+
+# LLama3.1-405B-as-a-Judge
+I read research papers that said LLM-as-a-Judge performed similar to humans. So during the competition I tried many times to use `Llama3.1-405B` to create synthetic data to improve CV and LB score. I tried 3 ideas but none of them worked. :-(
+
+In each scenario below, I employed few shot learning. I would show Llama 10 to 20 examples of real train data then ask Llama to create something. I would provide a detailed system prompt in addition to user prompt:
+* Show Llama3.1-405B fifteen examples and ask Llama3.1 to create new train data
+* Show Llama3.1-405B ten examples and `prompt-responseA` from `lmsys-1M-dataset` and ask Llama to create `responseB` and `target`
+* Show Llama3.1-405B twenty examples and `prompt-responseA-responseB` pairs from `lmsys-1M-dataset` and ask Llama to create `target`. Local validation showed that Llama was achieving around `logloss = 0.95` but this data did not help.
+
+# Post Competition Experiments
+I'm curious to learn what I missed to achieve Gold Medal. I will read other top solutions and try to incorporate new ideas into my final solution and make late submissions to LB. I will update this section if I discover anything that boosts my CV and LB score into Gold Medal zone!
+
+# UPDATE: Published Single Model Code
+I published the code to reproduce my best single model of `CV 0.878` and `LB 0.888` (on original public LB data). There are three Jupyter notebooks
+* Train (1 of 3) [here][8]
+* Quantize (2 of 3) [here][9]
+* Infer (3 of 3) [here][10]
+
+The first two public notebooks (1 and 2) use settings to train with QLoRA and quantize to 4bit in order to work within Kaggle's 2xT4 16GB GPUs. If we do this, then we can only infer with max token 2048 and achieve LB 0.889. If we train these notebooks offline, we can change the settings to use LoRA and quantize to 8bit and infer max token 3072 and achieve LB 0.888.
+
+[1]: https://www.kaggle.com/code/cdeotte/mistral-7b-baseline-lb-0-7x
+[2]: https://www.kaggle.com/competitions/lmsys-chatbot-arena/discussion/521294
+[3]: https://www.kaggle.com/code/cdeotte/infer-34b-with-vllm
+[4]: https://www.kaggle.com/code/cdeotte/starter-code-for-llama-8b-llm-lb-0-750
+[5]: https://www.kaggle.com/code/emiz6413/training-gemma-2-9b-4-bit-qlora-fine-tuning
+[6]: https://www.kaggle.com/code/emiz6413/inference-gemma-2-9b-4-bit-qlor
+[7]: https://www.kaggle.com/competitions/lmsys-chatbot-arena/discussion/500973
+[8]: https://www.kaggle.com/code/cdeotte/16th-place-train-1-of-3
+[9]: https://www.kaggle.com/code/cdeotte/16th-place-quantize-2-of-3
+[10]: https://www.kaggle.com/code/cdeotte/16th-place-infer-3-of-3
+
+## Context 1 ##
+Hi, Kagglers and competition hosts! 
+
+I have a question regarding the Secondary Prizes and amount of prizes which one team can potentially get:
+
+1. *Question 1* : According to the statement in the `Overview` section - `$15,000 in additional prizes will be awarded at the conclusion of the competition. All submitted solutions are automatically considered.` Do I understand correctly that **all team submissions** will be evaluated according to secondary criteria and considered for final Private LB? Does it mean that we do not have to pick a submission to maximize these criteria among **2 final submissions** ? 
+
+2. *Question 2* : Can one team be awarded all three prizes: Leaderboard Prize, Top-15 Retrieval Sensitivity, Model Efficiency ?
+
+@jwebermsk , looking forward to your reply
+
+P.S.
+
+I am 100% sure that this Discussion is a duplicate, but currently, it is pretty hard for me to find the original one. Sorry for my laziness
+
+## Context 2 ##
+I agree with CPMP. At this point, I think this competition has become a normal competition. We will see the final results from the new private LB and proceed forward as usual. There won't be additional code verification besides what is normal for prize winners. (And in every Kaggle competition, prize winners can read solution write-ups before submitting their code to host).
+
+Also, I do not believe there are any ways to cheat. The host has already said that using both `lmsys 1M dataset` [here][2] and the `targets for lmsys 1M dataset` [here][3] are allowed, discussion [here][1] (Note that I did not use them in my final solution).
+
+> **The host says**: talked with Kaggle and unfortunately we won't be reopening the competition. As a few kagglers pointed out, all of the data (including the leak) was publicly available and since the new test set does not have any overlap with the old dataset we see the use of this data as within the bounds of the competition
+
+In other words, there is no way to use the "leak targets for chats April 23rd onward" to train a model. The only way to use the "leak targets for chats April 23rd onward" is to search for the answers during submission. This is easily detected and won't be allowed. And it won't work on the new private test data since the new data will not be among these targets.
+
+HuggingFace user Jannchie downloaded targets from host on April 26, 2024 and uploaded them to HuggingFace on April 26, 2024. They can be used to pair with `lmsys 1M dataset` which is all data before April 23rd. The competition began on May 2nd, 2024. So the targets have been on HuggingFace the whole time and host says they have been allowed the whole time.
+
+[1]: https://www.kaggle.com/competitions/lmsys-chatbot-arena/discussion/524374#2949490
+[2]: https://huggingface.co/datasets/lmsys/lmsys-chat-1m
+[3]: https://huggingface.co/datasets/Jannchie/lmsys_chatbot_arena_conversations
+[5]: https://www.kaggle.com/competitions/lmsys-chatbot-arena/discussion/524448#2949280
+
